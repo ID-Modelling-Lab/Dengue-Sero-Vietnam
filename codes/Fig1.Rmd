@@ -1,0 +1,247 @@
+---
+title: "Figure1"
+author: "Phuong Huynh Thi"
+date: "19/10/2020"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list=ls())
+#loading packages
+library(grid)
+library(gridExtra)
+library(base)
+library(dplyr)
+library(tidyr)
+library(rstan)
+library(DescTools)
+library(data.table)
+
+```
+
+# Data input
+```{r data input, echo=FALSE}
+##Results from immune status (model C) and infecting serotype infering models ( model D vs Model F:
+#Model C1D1
+df1 <- read.csv("./data/PredictedIS_B23_567_pred.serotype_C1D1.csv")
+df1$sero.model <- "CD"
+#Model C1F1
+df2 <- read.csv("./data/PredictedIS_B23_567_pred.serotype_HomoAssigned_C1F1.csv")
+df2$sero.model <- "CF"
+data <- rbind(df1,df2)
+
+data$YEAR <- as.factor(data$YEAR)
+data$predictedIS<- ordered(data$predictedIS,levels=c("Secondary","Primary","Neg"))
+
+data$pred.serotype<- as.factor(data$pred.serotype)
+levels(data$pred.serotype) <- c("DENV1","DENV2", "DENV3","DENV4","Negative","Secondary")
+data$pred.serotype <- ordered(data$pred.serotype,levels=c("Secondary","DENV4","DENV3","DENV2","DENV1","Negative"))
+
+
+pop<- data[which(!is.na(data$AGE_MIN)&is.na(data$PanbioUnit)),]# cross out acute and ELISA samples
+pop$Site <- substr(pop$sampleID,1,2)
+
+```
+
+# Model C1D1
+## HC
+```{r PMA proportion_C1D1 in HC,echo=FALSE, message=FALSE,fig.height=6,fig.width=12}
+site ="HC"
+dataInput="C1D1"
+
+if(dataInput=="C1D1"){
+  pop1<- df1[which(!is.na(df1$AGE_MIN)&is.na(df1$PanbioUnit)),]# cross out acute and ELISA samples
+}
+if(dataInput=="C1F1"){
+  pop1<- df2[which(!is.na(df2$AGE_MIN)&is.na(df2$PanbioUnit)),]# cross out acute and ELISA samples
+}
+
+pop1$Site <- substr(pop1$sampleID,1,2)
+
+##Agegroup_5years : 6 groups
+pop1$AgeGroup <- ceiling(pop1$AGE_MIN/5)
+pop1$AgeGroup <- factor(
+  pop1$AgeGroup,
+  labels = c("(0-5]","(5-10]","(10-15]","(15-20]","(20-25]","(25-30]"))
+
+#
+p13CI.all=dplyr::filter(pop1,Site==paste(site))%>%group_by(AgeGroup)%>%dplyr::count(pred.serotype)%>%spread(pred.serotype,n)#DENV1,2,3,4,Neg, Secondary
+p13CI.all_negpos=dplyr::filter(pop1,Site==paste(site))%>%mutate(pred.serotype=ifelse(pred.serotype=="Neg","Neg","Pos"))%>%group_by(AgeGroup)%>%dplyr::count(pred.serotype)%>%spread(pred.serotype,n)#Neg, Pos
+
+# p13CI.all$Primary <- apply(p13CI.all[,2:5],1,sum,na.rm=T) # sum primary cases
+p13CI.all$total <- apply(p13CI.all[,2:7],1,sum,na.rm=T)
+p13CI.all_negpos$total <- apply(p13CI.all_negpos[,2:3],1,sum,na.rm=T)
+
+setnames(p13CI.all, old=c("Neg","1","2","3","4"), new=c("Negative","DENV1","DENV2","DENV3","DENV4"))
+setnames(p13CI.all_negpos, old=c("Neg","Pos"), new=c("Negative","Positive"))
+
+# Assign NA as 0:
+for (idx in 2:7){
+  idx.na <- which(is.na(p13CI.all[[idx]]))
+  p13CI.all[[idx]][idx.na] <- 0
+}
+
+# p13CI.all<- tidyr::gather(p13CI.all,"IS","n",7:9)# gather 3 variables (Neg,Prim,Secondary) into 1 variables called "IS"
+p13CI.all<- tidyr::gather(p13CI.all,"IS","n",2:7)# gather 6 variables (Neg,Prim [1-4],Secondary) into 1 variables called "IS"
+p13CI.all_negpos<- tidyr::gather(p13CI.all_negpos,"IS","n",2:3)# gather 2 variables (Neg,Pos) into 1 variables called "IS"
+
+
+p13CI.all<- p13CI.all[order(p13CI.all$AgeGroup),]# sort data by groupAge
+p13CI.all_negpos<- p13CI.all_negpos[order(p13CI.all_negpos$AgeGroup),]# sort data by groupAge
+
+p13CI.all<- dplyr::mutate(p13CI.all,est=0,lwr.ci=0,upr.ci=0)# create cols for importing result from multinomCI.
+p13CI.all_negpos<- dplyr::mutate(p13CI.all_negpos,est=0,lwr.ci=0,upr.ci=0)# create cols for importing result from multinomCI.
+
+# for ( i in seq(1,length(p13CI.all$AgeGroup),by=3)){# every 3 rows ,do....
+#   p13CI.all[i:(i+2),5:7] <- MultinomCI(c(p13CI.all$n[i:(i+2)]))
+# }
+
+for ( i in seq(1,length(p13CI.all$AgeGroup),by=6)){# every 6 rows ,do....
+  p13CI.all[i:(i+5),5:7] <- MultinomCI(c(p13CI.all$n[i:(i+5)])) #5:7: est,lwr.ci,up.ci
+}
+
+for ( i in seq(1,length(p13CI.all_negpos$AgeGroup),by=2)){# every 2 rows ,do....
+  p13CI.all_negpos[i:(i+1),5:7] <- MultinomCI(c(p13CI.all_negpos$n[i:(i+1)])) #5:7: est,lwr.ci,up.ci
+}
+
+#merge two : remove negative, add positive
+p13CI.all <- rbind(p13CI.all%>%filter(IS!="Negative"),p13CI.all_negpos%>%filter(IS=="Positive"))
+
+p13CI.all_HC <- p13CI.all%>%mutate(site="Ho Chi Minh")
+
+# plot
+pro_all_HC <- ggplot(p13CI.all, aes(x=AgeGroup,y=est,fill=IS,color=IS))+ geom_point()+
+  # scale_color_manual(values=c("#f16913","#bf812d","#7fbc41","#7bccc4","#542788","#c51b7d"))+
+  # ggtitle(paste(site,p13CI$YEAR[1]))+
+  labs(y="Proportion")+
+  ylim(0,1)+
+  # scale_color_manual(values=c("#b35806","#f1a340","#fee0b6","#d8daeb","#998ec3","#542788"))+
+  geom_errorbar(aes(ymax = upr.ci, ymin = lwr.ci), width = .4,
+                size=1, #thicker line
+                position=position_dodge(0.07))+ #left or right moving
+  theme(plot.title = element_text(color="darkblue", size=20, face="bold", hjust = 0.5),
+       strip.text.x = element_text(size=15),
+       axis.title = element_text(size = 12,face="bold"),
+      axis.text = element_text(face="bold", size = 12),
+      legend.title = element_blank())
+pro_all_HC
+  
+# ggsave(filename=paste("/home/phuong/pCloudDrive/PMA analysis results/figures/dataInputs/DENV Proportion_95CI",site,"model",dataInput,"allYears",".png"), plot = pro_all)
+
+```
+## KH
+```{r PMA proportion_C1D1 in KH,echo=FALSE, message=FALSE,fig.height=6,fig.width=12}
+site ="KH"
+dataInput="C1D1"
+
+if(dataInput=="C1D1"){
+  pop1<- df1[which(!is.na(df1$AGE_MIN)&is.na(df1$PanbioUnit)),]# cross out acute and ELISA samples
+}
+if(dataInput=="C1F1"){
+  pop1<- df2[which(!is.na(df2$AGE_MIN)&is.na(df2$PanbioUnit)),]# cross out acute and ELISA samples
+}
+
+pop1$Site <- substr(pop1$sampleID,1,2)
+
+##Agegroup_5years : 6 groups
+pop1$AgeGroup <- ceiling(pop1$AGE_MIN/5)
+pop1$AgeGroup <- factor(
+  pop1$AgeGroup,
+  labels = c("(0-5]","(5-10]","(10-15]","(15-20]","(20-25]","(25-30]"))
+
+#
+p13CI.all=dplyr::filter(pop1,Site==paste(site))%>%group_by(AgeGroup)%>%dplyr::count(pred.serotype)%>%spread(pred.serotype,n)#DENV1,2,3,4,Neg, Secondary
+p13CI.all_negpos=dplyr::filter(pop1,Site==paste(site))%>%mutate(pred.serotype=ifelse(pred.serotype=="Neg","Neg","Pos"))%>%group_by(AgeGroup)%>%dplyr::count(pred.serotype)%>%spread(pred.serotype,n)#Neg, Pos
+
+# p13CI.all$Primary <- apply(p13CI.all[,2:5],1,sum,na.rm=T) # sum primary cases
+p13CI.all$total <- apply(p13CI.all[,2:7],1,sum,na.rm=T)
+p13CI.all_negpos$total <- apply(p13CI.all_negpos[,2:3],1,sum,na.rm=T)
+
+setnames(p13CI.all, old=c("Neg","1","2","3","4"), new=c("Negative","DENV1","DENV2","DENV3","DENV4"))
+setnames(p13CI.all_negpos, old=c("Neg","Pos"), new=c("Negative","Positive"))
+
+# Assign NA as 0:
+for (idx in 2:7){
+  idx.na <- which(is.na(p13CI.all[[idx]]))
+  p13CI.all[[idx]][idx.na] <- 0
+}
+
+# p13CI.all<- tidyr::gather(p13CI.all,"IS","n",7:9)# gather 3 variables (Neg,Prim,Secondary) into 1 variables called "IS"
+p13CI.all<- tidyr::gather(p13CI.all,"IS","n",2:7)# gather 6 variables (Neg,Prim [1-4],Secondary) into 1 variables called "IS"
+p13CI.all_negpos<- tidyr::gather(p13CI.all_negpos,"IS","n",2:3)# gather 2 variables (Neg,Pos) into 1 variables called "IS"
+
+
+p13CI.all<- p13CI.all[order(p13CI.all$AgeGroup),]# sort data by groupAge
+p13CI.all_negpos<- p13CI.all_negpos[order(p13CI.all_negpos$AgeGroup),]# sort data by groupAge
+
+p13CI.all<- dplyr::mutate(p13CI.all,est=0,lwr.ci=0,upr.ci=0)# create cols for importing result from multinomCI.
+p13CI.all_negpos<- dplyr::mutate(p13CI.all_negpos,est=0,lwr.ci=0,upr.ci=0)# create cols for importing result from multinomCI.
+
+# for ( i in seq(1,length(p13CI.all$AgeGroup),by=3)){# every 3 rows ,do....
+#   p13CI.all[i:(i+2),5:7] <- MultinomCI(c(p13CI.all$n[i:(i+2)]))
+# }
+
+for ( i in seq(1,length(p13CI.all$AgeGroup),by=6)){# every 6 rows ,do....
+  p13CI.all[i:(i+5),5:7] <- MultinomCI(c(p13CI.all$n[i:(i+5)])) #5:7: est,lwr.ci,up.ci
+}
+
+for ( i in seq(1,length(p13CI.all_negpos$AgeGroup),by=2)){# every 2 rows ,do....
+  p13CI.all_negpos[i:(i+1),5:7] <- MultinomCI(c(p13CI.all_negpos$n[i:(i+1)])) #5:7: est,lwr.ci,up.ci
+}
+
+#merge two : remove negative, add positive
+p13CI.all <- rbind(p13CI.all%>%filter(IS!="Negative"),p13CI.all_negpos%>%filter(IS=="Positive"))
+p13CI.all_KH <- p13CI.all%>%mutate(site="Khanh Hoa")
+
+# plot
+pro_all_KH <- ggplot(p13CI.all, aes(x=AgeGroup,y=est,fill=IS,color=IS))+ geom_point()+
+  # scale_color_manual(values=c("#f16913","#bf812d","#7fbc41","#7bccc4","#542788","#c51b7d"))+
+  # ggtitle(paste(site,p13CI$YEAR[1]))+
+  labs(y="Proportion")+
+  ylim(0,1)+
+  # scale_color_manual(values=c("#b35806","#f1a340","#fee0b6","#d8daeb","#998ec3","#542788"))+
+  geom_errorbar(aes(ymax = upr.ci, ymin = lwr.ci), width = .4,
+                size=1, #thicker line
+                position=position_dodge(0.07))+ #left or right moving
+  theme(plot.title = element_text(color="darkblue", size=20, face="bold", hjust = 0.5),
+       strip.text.x = element_text(size=15),
+       axis.title = element_text(size = 12,face="bold"),
+      axis.text = element_text(face="bold", size = 12),
+      legend.title = element_blank())
+pro_all_KH
+  
+# ggsave(filename=paste("/home/phuong/pCloudDrive/PMA analysis results/figures/dataInputs/DENV Proportion_95CI",site,"model",dataInput,"allYears",".png"), plot = pro_all)
+
+```
+
+## HC and KH 
+Manual save figure 1000x 500
+```{r}
+
+p13CI.all  <- rbind(p13CI.all_HC ,p13CI.all_KH )
+
+p <- ggplot(p13CI.all, aes(x=AgeGroup,y=est,fill=IS,color=IS))+ geom_point()+
+  # scale_color_manual(values=c("#f16913","#bf812d","#7fbc41","#7bccc4","#542788","#c51b7d"))+
+  # ggtitle(paste(site,p13CI$YEAR[1]))+
+  labs(y="Proportion")+
+  ylim(0,1)+
+  # scale_color_manual(values=c("#b35806","#f1a340","#fee0b6","#d8daeb","#998ec3","#542788"))+
+  geom_errorbar(aes(ymax = upr.ci, ymin = lwr.ci), width = .4,
+                size=1, #thicker line
+                position=position_dodge(0.07))+ #left or right moving
+  facet_wrap(.~site)+
+  theme(plot.title = element_text(color="darkblue", size=20, face="bold", hjust = 0.5),
+       strip.text.x = element_text(size=15),
+       axis.title = element_text(size = 12,face="bold"),
+       axis.text = element_text(face="bold", size = 12),
+       legend.text = element_text(size = 12 ),
+      legend.title = element_blank())
+p
+
+ggsave(filename=paste("./output/figures/Fig1.png"), plot = p, height = 8, width = 12)
+
+```
+
